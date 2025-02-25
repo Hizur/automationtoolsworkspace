@@ -1,0 +1,1 @@
+cmd/PowerShell/dunno jak na linuxie, ustawiamy środowisko komendą: $envHUMBLE_SESSION_COOKIE = '_simpleauth_sess'
