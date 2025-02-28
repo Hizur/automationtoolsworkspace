@@ -139,14 +139,14 @@ def main():
 
             extracted_key_count = len(all_data)
 
-            # --- Click "Next Page" Button ---
+            # --- Click "Next Page" Button (nieprzetestowane) ---
             try:
                 load_more_element = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((LOAD_MORE_ELEMENT_XPATH_TYPE, LOAD_MORE_ELEMENT_XPATH))
                 )
                 load_more_element.click()
-                page_number += 1  # Increment page number *after* clicking
-                # Wait for the next page to start loading (key containers)
+                page_number += 1  # Increment page number *after* clicking nieprzetestowane
+                # Wait for the next page to start loading (key containers) nieprzetestowane
                 WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.XPATH, KEY_CONTAINER_XPATH))
                 )
