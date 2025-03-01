@@ -72,75 +72,119 @@ class HumbleBundleScraper:
     def save_to_database(self, bundle_data):
         try:
             print("Zapisuję dane do bazy danych...")
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'humble_bundles.db')
+            db_path = os.path.join(os.getcwd(), 'humble_bundles.db')
             print(f"Ścieżka do bazy danych: {db_path}")
             
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
-            # Tworzenie tabeli, jeśli nie istnieje
+            # Tworzenie tabel z lepszą strukturą
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS bundles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 price_range TEXT,
                 url TEXT UNIQUE,
-                scrape_date TEXT
+                date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                bundle_type TEXT,
+                is_active INTEGER DEFAULT 1
             )
             ''')
             
-            # Tworzenie tabeli dla zawartości bundli
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS bundle_contents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 bundle_id INTEGER,
                 item_name TEXT,
-                FOREIGN KEY (bundle_id) REFERENCES bundles (id)
+                item_order INTEGER,
+                FOREIGN KEY (bundle_id) REFERENCES bundles(id)
             )
             ''')
             
-            # Zapisywanie danych
-            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Sprawdź czy istnieje stara tabela i przenieś dane jeśli potrzeba
+            cursor.execute("PRAGMA table_info(bundle_contents)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'content_item' in columns and 'item_name' not in columns:
+                print("Migracja danych ze starej struktury...")
+                # Dodaj nową kolumnę
+                cursor.execute("ALTER TABLE bundle_contents ADD COLUMN item_name TEXT")
+                cursor.execute("ALTER TABLE bundle_contents ADD COLUMN item_order INTEGER")
+                
+                # Przenieś dane
+                cursor.execute("UPDATE bundle_contents SET item_name = content_item WHERE item_name IS NULL")
+                conn.commit()
+            
+            # Dodaj indeksy dla szybszego wyszukiwania
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bundle_title ON bundles(title)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bundle_type ON bundles(bundle_type)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bundle_active ON bundles(is_active)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bundle_contents ON bundle_contents(bundle_id)")
+            
+            # Oznacz wszystkie istniejące bundle jako nieaktywne przed dodaniem nowych
+            cursor.execute("UPDATE bundles SET is_active = 0")
+            
+            # Dodaj nowe dane
             for bundle in bundle_data:
-                try:
-                    # Dodawanie bundle
+                title = bundle.get('title', 'Nieznany Bundle')
+                price = bundle.get('price_range', '€1')
+                url = bundle.get('url', '')
+                contents = bundle.get('contents', [])
+                
+                # Określ typ bundla na podstawie tytułu lub URL
+                bundle_type = 'Inny'
+                if 'Book Bundle' in title or 'books' in url:
+                    bundle_type = 'Książki'
+                elif 'Game Bundle' in title or 'games' in url:
+                    bundle_type = 'Gry'
+                elif 'Software Bundle' in title or 'software' in url:
+                    bundle_type = 'Oprogramowanie'
+                
+                # Sprawdź czy bundle już istnieje
+                cursor.execute("SELECT id FROM bundles WHERE url = ?", (url,))
+                result = cursor.fetchone()
+                
+                if result:
+                    # Bundle istnieje, aktualizuj dane
+                    bundle_id = result[0]
                     cursor.execute('''
-                    INSERT OR REPLACE INTO bundles (title, price_range, url, scrape_date)
-                    VALUES (?, ?, ?, ?)
-                    ''', (bundle['title'], bundle['price_range'], bundle['url'], current_date))
+                    UPDATE bundles 
+                    SET title = ?, price_range = ?, is_active = 1, bundle_type = ?
+                    WHERE id = ?
+                    ''', (title, price, bundle_type, bundle_id))
                     
-                    # Pobieranie ID dodanego bundle
+                    # Usuń starą zawartość
+                    cursor.execute("DELETE FROM bundle_contents WHERE bundle_id = ?", (bundle_id,))
+                else:
+                    # Dodaj nowy bundle
+                    cursor.execute('''
+                    INSERT INTO bundles (title, price_range, url, bundle_type, is_active)
+                    VALUES (?, ?, ?, ?, 1)
+                    ''', (title, price, url, bundle_type))
                     bundle_id = cursor.lastrowid
-                    
-                    # Usuwanie starych zawartości dla tego bundle
-                    cursor.execute('DELETE FROM bundle_contents WHERE bundle_id = ?', (bundle_id,))
-                    
-                    # Dodawanie zawartości
-                    for item in bundle['contents']:
-                        cursor.execute('''
-                        INSERT INTO bundle_contents (bundle_id, item_name)
-                        VALUES (?, ?)
-                        ''', (bundle_id, item))
-                    
-                    print(f"Zapisano bundle: {bundle['title']}")
-                except Exception as e:
-                    print(f"Błąd podczas zapisywania bundle {bundle['title']}: {e}")
+                
+                # Dodaj zawartość bundla
+                for i, item in enumerate(contents):
+                    cursor.execute('''
+                    INSERT INTO bundle_contents (bundle_id, item_name, item_order)
+                    VALUES (?, ?, ?)
+                    ''', (bundle_id, item, i+1))
             
-            # Zatwierdzanie zmian
             conn.commit()
-            print(f"Pomyślnie zapisano {len(bundle_data)} bundli do bazy danych")
+            print(f"Zapisano {len(bundle_data)} bundli do bazy danych")
             
-            # Sprawdzanie, czy dane zostały zapisane
-            cursor.execute('SELECT COUNT(*) FROM bundles')
-            bundle_count = cursor.fetchone()[0]
-            cursor.execute('SELECT COUNT(*) FROM bundle_contents')
-            content_count = cursor.fetchone()[0]
-            print(f"W bazie danych znajduje się {bundle_count} bundli i {content_count} elementów zawartości")
+            # Wyświetl statystyki
+            cursor.execute("SELECT bundle_type, COUNT(*) FROM bundles WHERE is_active = 1 GROUP BY bundle_type")
+            stats = cursor.fetchall()
+            print("\nStatystyki aktywnych bundli:")
+            for bundle_type, count in stats:
+                print(f"- {bundle_type}: {count}")
             
             conn.close()
             return True
+            
         except Exception as e:
-            print(f"Wystąpił błąd podczas zapisywania do bazy danych: {e}")
+            print(f"Błąd podczas zapisywania do bazy danych: {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -406,6 +450,83 @@ class HumbleBundleScraper:
             return "€1"
         except:
             return "€1"
+
+    def display_database_summary(self):
+        """Wyświetla podsumowanie zawartości bazy danych w czytelny sposób."""
+        try:
+            db_path = os.path.join(os.getcwd(), 'humble_bundles.db')
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Pobierz wszystkie aktywne bundle
+            cursor.execute("""
+            SELECT id, title, price_range, bundle_type, date_added 
+            FROM bundles 
+            WHERE is_active = 1
+            ORDER BY bundle_type, title
+            """)
+            
+            bundles = cursor.fetchall()
+            
+            if not bundles:
+                print("Brak aktywnych bundli w bazie danych.")
+                return
+            
+            # Statystyki według typu
+            cursor.execute("""
+            SELECT bundle_type, COUNT(*) as count 
+            FROM bundles 
+            WHERE is_active = 1 
+            GROUP BY bundle_type
+            ORDER BY count DESC
+            """)
+            
+            stats = cursor.fetchall()
+            
+            print("\n===== PODSUMOWANIE BUNDLI W BAZIE DANYCH =====")
+            print(f"Łączna liczba aktywnych bundli: {len(bundles)}")
+            print("\nPodział według kategorii:")
+            for bundle_type, count in stats:
+                print(f"- {bundle_type}: {count} bundli")
+            
+            # Wyświetl szczegóły każdego bundla
+            print("\n===== SZCZEGÓŁY BUNDLI =====")
+            for bundle_id, title, price_range, bundle_type, date_added in bundles:
+                # Pobierz liczbę elementów w bundlu
+                cursor.execute("SELECT COUNT(*) FROM bundle_contents WHERE bundle_id = ?", (bundle_id,))
+                item_count = cursor.fetchone()[0]
+                
+                # Pobierz przykładowe elementy (pierwsze 3)
+                cursor.execute("""
+                SELECT item_name FROM bundle_contents 
+                WHERE bundle_id = ? 
+                ORDER BY item_order 
+                LIMIT 3
+                """, (bundle_id,))
+                
+                sample_items = cursor.fetchall()
+                sample_items = [item[0] for item in sample_items]
+                
+                # Formatuj wyświetlanie
+                print(f"\n[{bundle_type}] {title}")
+                print(f"Cena: {price_range}")
+                print(f"Dodano: {date_added}")
+                print(f"Liczba elementów: {item_count}")
+                print("Przykładowe elementy:")
+                for item in sample_items:
+                    print(f"- {item}")
+                if item_count > 3:
+                    print(f"- ... i {item_count - 3} więcej")
+                print("-" * 50)
+            
+            conn.close()
+            return True
+            
+        except Exception as e:
+            print(f"Błąd podczas wyświetlania podsumowania bazy danych: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
 
 def main():
     scraper = HumbleBundleScraper()
